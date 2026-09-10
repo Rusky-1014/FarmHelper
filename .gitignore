@@ -43,3 +43,9 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Large model assets excluded from GitHub repo
+assets/models/*.task
+assets/speech/**/*.onnx
+assets/tts/**/*.onnx
+
