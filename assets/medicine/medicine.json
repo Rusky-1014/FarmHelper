@@ -1,0 +1,101 @@
+{
+  "mango": {
+    "Anthracnose": {
+      "symptoms": "Dark black sunken lesions on leaves, flowers and fruits. Fruit rot may occur under humid conditions.",
+      "medicine": "Copper Oxychloride",
+      "dosage": "2 g/L water",
+      "frequency": "Every 7–10 days",
+      "preventive": "Remove infected leaves and avoid excessive moisture."
+    },
+
+    "Bacterial Canker": {
+      "symptoms": "Cracks in bark, leaf spots and branch dieback.",
+      "medicine": "Copper Hydroxide",
+      "dosage": "2.5 g/L water",
+      "frequency": "Every 10–14 days",
+      "preventive": "Prune infected branches and disinfect tools."
+    },
+
+    "Cutting Weevil": {
+      "symptoms": "Leaves show cuts and feeding damage caused by insects.",
+      "medicine": "Imidacloprid",
+      "dosage": "0.5 ml/L water",
+      "frequency": "As required",
+      "preventive": "Maintain orchard hygiene and monitor pest population."
+    },
+
+    "Die Back": {
+      "symptoms": "Drying of twigs and branches from the tip backward.",
+      "medicine": "Carbendazim",
+      "dosage": "1 g/L water",
+      "frequency": "Every 10 days",
+      "preventive": "Prune affected branches and apply fungicide."
+    },
+
+    "Gall Midge": {
+      "symptoms": "Leaf curling and gall formation due to larvae.",
+      "medicine": "Dimethoate",
+      "dosage": "2 ml/L water",
+      "frequency": "Every 7 days",
+      "preventive": "Destroy infected plant parts."
+    },
+
+    "Healthy": {
+      "symptoms": "No disease symptoms detected.",
+      "medicine": "No treatment required",
+      "dosage": "-",
+      "frequency": "-",
+      "preventive": "Continue regular monitoring and nutrient management."
+    },
+
+    "Powdery Mildew": {
+      "symptoms": "White powder-like fungal growth on leaves and flowers.",
+      "medicine": "Wettable Sulphur",
+      "dosage": "3 g/L water",
+      "frequency": "Every 10 days",
+      "preventive": "Improve air circulation and avoid overcrowding."
+    },
+
+    "Sooty Mould": {
+      "symptoms": "Black fungal coating on leaves reducing photosynthesis.",
+      "medicine": "Neem Oil or Copper Fungicide",
+      "dosage": "5 ml/L water",
+      "frequency": "Weekly",
+      "preventive": "Control sap-sucking insects like aphids and mealybugs."
+    }
+  },
+
+  "grape": {
+    "Black Rot": {
+      "symptoms": "Brown lesions on leaves and black shriveled fruits.",
+      "medicine": "Mancozeb",
+      "dosage": "2.5 g/L water",
+      "frequency": "Every 7–10 days",
+      "preventive": "Remove infected berries and maintain ventilation."
+    },
+
+    "ESCA": {
+      "symptoms": "Interveinal yellowing and vine decline.",
+      "medicine": "No complete cure available",
+      "dosage": "-",
+      "frequency": "-",
+      "preventive": "Prune infected wood and maintain vine health."
+    },
+
+    "Healthy": {
+      "symptoms": "No disease symptoms detected.",
+      "medicine": "No treatment required",
+      "dosage": "-",
+      "frequency": "-",
+      "preventive": "Maintain regular irrigation and nutrition."
+    },
+
+    "Leaf Blight": {
+      "symptoms": "Brown necrotic patches spreading across leaves.",
+      "medicine": "Copper Oxychloride",
+      "dosage": "2 g/L water",
+      "frequency": "Every 7 days",
+      "preventive": "Avoid excess humidity and remove infected leaves."
+    }
+  }
+}
