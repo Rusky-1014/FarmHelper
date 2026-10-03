@@ -133,6 +133,7 @@ The AI pipeline is designed to operate **without requiring cloud AI APIs during 
 
                          📵 OFFLINE-FIRST
                     No cloud AI required during use
+```
 
 ---
 
