@@ -133,3 +133,35 @@ The AI pipeline is designed to operate **without requiring cloud AI APIs during 
 
                          📵 OFFLINE-FIRST
                     No cloud AI required during use
+
+---
+
+# ⚙️ Setup
+
+## Model files
+
+The large model files are **not in Git** (see `.gitignore`). Put them here before building:
+
+| Path | Source |
+|------|--------|
+| `assets/models/gemma3-1b-it-int4.task` | Gemma 3 1B IT int4 (litert-community on Hugging Face) |
+| `assets/speech/whisper/tiny-encoder.int8.onnx`, `tiny-decoder.int8.onnx` | `sherpa-onnx-whisper-tiny.tar.bz2` (sherpa-onnx releases) |
+| `assets/tts/supertonic/*.int8.onnx` | `sherpa-onnx-supertonic-3-tts-int8-2026-05-11.tar.bz2` (sherpa-onnx releases) |
+
+Small files (`mango.tflite`, `grape.tflite`, `tiny-tokens.txt`, `tts.json`, `voice.bin`, `unicode_indexer.bin`) are committed.
+
+## Build and install
+
+```sh
+flutter pub get
+flutter build apk --release --target-platform android-arm64
+adb install -r build/app/outputs/flutter-apk/app-release.apk
+```
+
+The phone needs about **2.2 GB free**. The first time the AI chat opens, the Gemma model is copied into app storage (about 1 minute, shown as a percentage). After that it starts in a few seconds.
+
+## Tests
+
+```sh
+flutter test
+```

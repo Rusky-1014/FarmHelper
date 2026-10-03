@@ -1,143 +1,48 @@
 import 'dart:io';
+import 'dart:isolate';
 
-import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
-import 'package:sherpa_onnx/sherpa_onnx.dart'
-    as sherpa_onnx;
+import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
 
+import 'asset_file_service.dart';
+
+/// Offline speech-to-text using Whisper tiny (sherpa-onnx).
+///
+/// Decoding runs in a background isolate so the UI does
+/// not freeze while the recording is transcribed.
 class SpeechToTextService {
   SpeechToTextService._();
 
-  static final AudioRecorder _recorder =
-      AudioRecorder();
+  static const _base = 'assets/speech/whisper';
 
-  static sherpa_onnx.OfflineRecognizer? _recognizer;
+  static final AudioRecorder _recorder = AudioRecorder();
 
-  static bool _initialized = false;
+  static _WhisperPaths? _paths;
+
   static bool _recording = false;
-
   static String? _recordingPath;
 
-  static bool get isInitialized =>
-      _initialized;
+  static bool get isInitialized => _paths != null;
 
-  static bool get isRecording =>
-      _recording;
+  static bool get isRecording => _recording;
 
-  static Future<String> _copyAssetToLocal(
-    String assetPath,
-  ) async {
-    final appDirectory =
-        await getApplicationSupportDirectory();
-
-    final destination = File(
-      '${appDirectory.path}/$assetPath',
-    );
-
-    await destination.parent.create(
-      recursive: true,
-    );
-
-    if (!await destination.exists()) {
-      final data =
-          await rootBundle.load(assetPath);
-
-      final bytes =
-          data.buffer.asUint8List(
-        data.offsetInBytes,
-        data.lengthInBytes,
-      );
-
-      await destination.writeAsBytes(
-        bytes,
-        flush: true,
-      );
-    }
-
-    return destination.path;
-  }
-
+  /// Copies the model files out of the APK (first run only).
   static Future<void> initialize() async {
-    if (_initialized &&
-        _recognizer != null) {
+    if (_paths != null) {
       return;
     }
 
-    try {
-      await sherpa_onnx.initBindingsAsync();
+    _paths = _WhisperPaths(
+      encoder:
+          await AssetFileService.copyAssetToLocal('$_base/tiny-encoder.int8.onnx'),
+      decoder:
+          await AssetFileService.copyAssetToLocal('$_base/tiny-decoder.int8.onnx'),
+      tokens: await AssetFileService.copyAssetToLocal('$_base/tiny-tokens.txt'),
+    );
 
-      final encoder =
-          await _copyAssetToLocal(
-        'assets/speech/whisper/'
-        'tiny-encoder.int8.onnx',
-      );
-
-      final decoder =
-          await _copyAssetToLocal(
-        'assets/speech/whisper/'
-        'tiny-decoder.int8.onnx',
-      );
-
-      final tokens =
-          await _copyAssetToLocal(
-        'assets/speech/whisper/'
-        'tiny-tokens.txt',
-      );
-
-      /*
-       * IMPORTANT:
-       *
-       * language: ''
-       *
-       * means we do not force Whisper to one language.
-       *
-       * This is necessary for our English/Hindi/Tamil demo.
-       */
-      final whisper =
-          sherpa_onnx.OfflineWhisperModelConfig(
-        encoder: encoder,
-        decoder: decoder,
-        language: '',
-        task: 'transcribe',
-      );
-
-      final model =
-          sherpa_onnx.OfflineModelConfig(
-        whisper: whisper,
-        tokens: tokens,
-        modelType: 'whisper',
-        numThreads: 2,
-        debug: false,
-        provider: 'cpu',
-      );
-
-      final config =
-          sherpa_onnx.OfflineRecognizerConfig(
-        model: model,
-        decodingMethod: 'greedy_search',
-      );
-
-      _recognizer =
-          sherpa_onnx.OfflineRecognizer(
-        config,
-      );
-
-      _initialized = true;
-
-      print(
-        'SpeechToTextService: Whisper ready.',
-      );
-    } catch (e) {
-      _initialized = false;
-      _recognizer = null;
-
-      print(
-        'SpeechToTextService initialization error: $e',
-      );
-
-      rethrow;
-    }
+    debugPrint('SpeechToTextService: Whisper files ready.');
   }
 
   static Future<void> startRecording() async {
@@ -145,48 +50,34 @@ class SpeechToTextService {
       return;
     }
 
-    await initialize();
-
-    final permission =
-        await _recorder.hasPermission();
-
-    if (!permission) {
-      throw Exception(
-        'Microphone permission was denied.',
-      );
+    if (!await _recorder.hasPermission()) {
+      throw Exception('Microphone permission was denied.');
     }
 
-    final directory =
-        await getTemporaryDirectory();
+    final directory = await getTemporaryDirectory();
+    final path = '${directory.path}/farmhelper_voice.wav';
 
-    final path =
-        '${directory.path}/farmhelper_voice.wav';
-
-    final oldFile =
-        File(path);
-
+    final oldFile = File(path);
     if (await oldFile.exists()) {
       await oldFile.delete();
     }
 
-    const config =
-        RecordConfig(
-      encoder: AudioEncoder.wav,
-      sampleRate: 16000,
-      numChannels: 1,
-    );
-
     await _recorder.start(
-      config,
+      const RecordConfig(
+        encoder: AudioEncoder.wav,
+        sampleRate: 16000,
+        numChannels: 1,
+      ),
       path: path,
     );
 
     _recordingPath = path;
     _recording = true;
 
-    print(
-      'SpeechToTextService: Recording started.',
-    );
+    // Prepare model files while the farmer is speaking.
+    initialize().catchError((Object e) {
+      debugPrint('SpeechToTextService: prepare failed: $e');
+    });
   }
 
   static Future<String> stopAndTranscribe() async {
@@ -197,80 +88,36 @@ class SpeechToTextService {
     String? actualPath;
 
     try {
-      actualPath =
-          await _recorder.stop();
-
+      actualPath = await _recorder.stop() ?? _recordingPath;
       _recording = false;
 
-      actualPath ??= _recordingPath;
-
-      _recordingPath = null;
-
-      if (actualPath == null ||
-          actualPath.isEmpty) {
+      if (actualPath == null || actualPath.isEmpty) {
         return '';
       }
 
-      final audioFile =
-          File(actualPath);
-
-      if (!await audioFile.exists()) {
-        throw Exception(
-          'Recorded audio file was not found.',
-        );
+      if (!await File(actualPath).exists()) {
+        throw Exception('Recorded audio file was not found.');
       }
 
-      if (_recognizer == null) {
-        await initialize();
-      }
+      await initialize();
 
-      print(
-        'SpeechToTextService: Transcribing...',
-      );
+      final paths = _paths!;
+      final audioPath = actualPath;
 
-      final wave =
-          sherpa_onnx.readWave(
-        actualPath,
-      );
+      final text = await Isolate.run(() => _transcribe(paths, audioPath));
 
-      final stream =
-          _recognizer!.createStream();
+      debugPrint('SpeechToTextService result: $text');
 
-      try {
-        stream.acceptWaveform(
-          samples: wave.samples,
-          sampleRate: wave.sampleRate,
-        );
-
-        _recognizer!.decode(stream);
-
-        final result =
-            _recognizer!.getResult(stream);
-
-        final text =
-            result.text.trim();
-
-        print(
-          'SpeechToTextService result: $text',
-        );
-
-        return text;
-      } finally {
-        stream.free();
-      }
+      return text;
     } finally {
       _recording = false;
       _recordingPath = null;
 
       if (actualPath != null) {
-        final file =
-            File(actualPath);
-
-        if (await file.exists()) {
-          try {
-            await file.delete();
-          } catch (_) {}
-        }
+        try {
+          final file = File(actualPath);
+          if (await file.exists()) await file.delete();
+        } catch (_) {}
       }
     }
   }
@@ -286,35 +133,76 @@ class SpeechToTextService {
 
     _recording = false;
 
-    final path =
-        _recordingPath;
-
+    final path = _recordingPath;
     _recordingPath = null;
 
     if (path != null) {
-      final file =
-          File(path);
-
-      if (await file.exists()) {
-        try {
-          await file.delete();
-        } catch (_) {}
-      }
+      try {
+        final file = File(path);
+        if (await file.exists()) await file.delete();
+      } catch (_) {}
     }
   }
 
   static void dispose() {
-    try {
-      _recognizer?.free();
-    } catch (_) {}
-
-    _recognizer = null;
-
-    _initialized = false;
-
     _recorder.dispose();
-
     _recording = false;
     _recordingPath = null;
+  }
+}
+
+class _WhisperPaths {
+  final String encoder;
+  final String decoder;
+  final String tokens;
+
+  const _WhisperPaths({
+    required this.encoder,
+    required this.decoder,
+    required this.tokens,
+  });
+}
+
+/// Runs inside a background isolate.
+String _transcribe(_WhisperPaths paths, String audioPath) {
+  sherpa_onnx.initBindings();
+
+  final recognizer = sherpa_onnx.OfflineRecognizer(
+    sherpa_onnx.OfflineRecognizerConfig(
+      model: sherpa_onnx.OfflineModelConfig(
+        // language '' lets Whisper auto-detect English/Hindi/Tamil.
+        whisper: sherpa_onnx.OfflineWhisperModelConfig(
+          encoder: paths.encoder,
+          decoder: paths.decoder,
+          language: '',
+          task: 'transcribe',
+        ),
+        tokens: paths.tokens,
+        modelType: 'whisper',
+        numThreads: 2,
+        debug: false,
+        provider: 'cpu',
+      ),
+      decodingMethod: 'greedy_search',
+    ),
+  );
+
+  try {
+    final wave = sherpa_onnx.readWave(audioPath);
+
+    if (wave.samples.isEmpty) {
+      return '';
+    }
+
+    final stream = recognizer.createStream();
+    try {
+      stream.acceptWaveform(samples: wave.samples, sampleRate: wave.sampleRate);
+      recognizer.decode(stream);
+      return recognizer.getResult(stream).text.trim();
+    } finally {
+      stream.free();
+    }
+  } finally {
+    recognizer.free();
   }
 }

@@ -4,406 +4,287 @@ import 'package:flutter_gemma/flutter_gemma.dart';
 import 'ai_context_service.dart';
 import 'language_service.dart';
 
+/// One previous exchange, replayed to Gemma as short context.
+class ChatTurn {
+  final String question;
+  final String answer;
+
+  const ChatTurn(this.question, this.answer);
+}
+
+/// Offline Gemma 3 1B assistant.
+///
+/// WHY EVERY QUESTION STARTS A FRESH SESSION:
+/// The model has a fixed 2048-token context window. The old
+/// code kept appending every prompt and answer to one native
+/// session, and flutter_gemma's non-streaming call never trims
+/// it, so after a few questions the window was full and Gemma
+/// silently stopped answering. Now the native session is
+/// cleared before each question and only a short, truncated
+/// summary of the last exchanges is sent along, so the prompt
+/// size stays bounded no matter how long the chat gets.
 class GemmaService {
+  GemmaService._();
+
+  static const _modelAsset = 'assets/models/gemma3-1b-it-int4.task';
+
+  static const _maxTokens = 2048;
+  static const _maxOutputTokens = 512;
+
+  /// How many previous exchanges are replayed, and how many
+  /// characters of each are kept.
+  static const _historyTurns = 2;
+  static const _historyChars = 240;
+
+  static const _systemInstruction = '''
+You are FarmHelper, an offline assistant for farmers, running on the farmer's phone.
+Help with crop diseases, plant health, pests, irrigation, soil, fertilizer and general farming.
+Rules:
+- Use simple words a farmer understands.
+- Keep answers short: 3 to 6 short points or a few sentences.
+- Give practical steps the farmer can do today.
+- If a leaf scan result is given, use it, but say the scan can be wrong.
+- Only give a chemical dosage if the app's recommended treatment lists it. Otherwise tell the farmer to follow the product label or the local agriculture office.
+- Never claim to use the internet.''';
+
   static InferenceModel? _model;
   static InferenceChat? _chat;
 
-  static bool _initialized = false;
-  static bool _initializing = false;
+  static Future<void>? _initFuture;
 
-  static bool get isInitialized => _initialized;
+  static bool _busy = false;
 
-  /// Initializes Gemma.
+  static bool get isInitialized => _chat != null;
+
+  static bool get isBusy => _busy;
+
+  /// Installs (first launch only) and loads the model.
   ///
-  /// IMPORTANT:
-  /// FlutterGemma.initialize() is handled by main.dart.
-  ///
-  /// This method:
-  /// 1. Checks whether the Gemma model is already installed.
-  /// 2. Installs it ONLY if it is missing.
-  /// 3. Loads the installed model.
-  ///
-  /// Therefore, once the model is installed on the phone,
-  /// this method does NOT copy the 555 MB model again.
+  /// Safe to call many times; concurrent callers share the
+  /// same initialization.
   static Future<void> initialize({
     void Function(int progress)? onProgress,
-  }) async {
-    if (_initialized && _chat != null) {
-      debugPrint(
-        'GemmaService: Already initialized.',
-      );
-      return;
+  }) {
+    if (_chat != null) {
+      return Future.value();
     }
 
-    if (_initializing) {
-      debugPrint(
-        'GemmaService: Initialization already in progress.',
-      );
-      return;
-    }
+    return _initFuture ??= _initialize(onProgress).catchError((Object e) {
+      _initFuture = null;
+      throw e;
+    });
+  }
 
-    _initializing = true;
+  static Future<void> _initialize(
+    void Function(int progress)? onProgress,
+  ) async {
+    debugPrint('GemmaService: preparing model...');
 
+    // install() skips the copy when the model is already on
+    // the device, and always marks it as the active model.
+    // (The old code skipped install() when the model existed,
+    // which left no active model after an app restart.)
+    await FlutterGemma.installModel(
+      modelType: ModelType.gemmaIt,
+      fileType: ModelFileType.task,
+    ).fromAsset(_modelAsset).withProgress((progress) {
+      onProgress?.call(progress);
+    }).install();
+
+    // GPU is much faster, but not every phone supports it.
+    // Creating the session is where an unsupported GPU fails.
+    InferenceModel? model;
     try {
-      debugPrint(
-        '======================================',
-      );
-      debugPrint(
-        '        FARMHELPER GEMMA START        ',
-      );
-      debugPrint(
-        '======================================',
-      );
-
-      const modelId = 'gemma3-1b-it-int4';
-
-      /*
-       * CHECK EXISTING MODEL
-       *
-       * This prevents the 555 MB model from being
-       * copied again on every initialization.
-       */
-      debugPrint(
-        'Checking installed Gemma model...',
-      );
-
-      final alreadyInstalled =
-          await FlutterGemma.isModelInstalled(
-        modelId,
-      );
-
-      if (alreadyInstalled) {
-        debugPrint(
-          'Gemma model already installed.',
-        );
-
-        debugPrint(
-          'Skipping Gemma installation.',
-        );
-      } else {
-        debugPrint(
-          'Gemma model not installed.',
-        );
-
-        debugPrint(
-          'Installing Gemma model from asset...',
-        );
-
-        await FlutterGemma.installModel(
-          modelType: ModelType.gemmaIt,
-          fileType: ModelFileType.task,
-        )
-            .fromAsset(
-              'assets/models/gemma3-1b-it-int4.task',
-            )
-            .withProgress((progress) {
-              debugPrint(
-                'Gemma installation: $progress%',
-              );
-
-              onProgress?.call(progress);
-            })
-            .install();
-
-        debugPrint(
-          'Gemma model installation completed.',
-        );
-      }
-
-      /*
-       * LOAD EXISTING MODEL
-       */
-      debugPrint(
-        'Loading active Gemma model...',
-      );
-
-      _model =
-          await FlutterGemma.getActiveModel(
-        maxTokens: 2048,
+      model = await FlutterGemma.getActiveModel(
+        maxTokens: _maxTokens,
         preferredBackend: PreferredBackend.gpu,
       );
+      _chat = await _createChat(model);
+      debugPrint('GemmaService: using GPU.');
+    } catch (e) {
+      debugPrint('GemmaService: GPU unavailable ($e), using CPU.');
+      try {
+        await model?.close();
+      } catch (_) {}
+      model = await FlutterGemma.getActiveModel(
+        maxTokens: _maxTokens,
+        preferredBackend: PreferredBackend.cpu,
+      );
+      _chat = await _createChat(model);
+    }
+    _model = model;
 
-      debugPrint(
-        'Active Gemma model loaded.',
+    debugPrint('GemmaService: ready.');
+  }
+
+  static Future<InferenceChat> _createChat(InferenceModel model) {
+    return model.createChat(
+      temperature: 0.5,
+      randomSeed: 42,
+      topK: 40,
+      topP: 0.95,
+      maxOutputTokens: _maxOutputTokens,
+      systemInstruction: _systemInstruction,
+    );
+  }
+
+  /// Asks a question and streams the answer as it is
+  /// generated. Each event is the full answer so far.
+  static Stream<String> askStream(
+    String question, {
+    String? language,
+    List<ChatTurn> history = const [],
+  }) async* {
+    final cleanQuestion = question.trim();
+    if (cleanQuestion.isEmpty) {
+      return;
+    }
+
+    await initialize();
+
+    if (_busy) {
+      throw Exception('FarmHelper AI is still answering. Please wait.');
+    }
+    _busy = true;
+
+    final lang = language ?? LanguageService.detectLanguage(cleanQuestion);
+    final buffer = StringBuffer();
+
+    try {
+      // Start from an empty native context every time.
+      await _chat!.clearHistory();
+
+      await _chat!.addQueryChunk(
+        Message.text(
+          text: _buildPrompt(cleanQuestion, lang, history),
+          isUser: true,
+        ),
       );
 
-      /*
-       * CREATE CHAT
-       *
-       * The system instruction is intentionally
-       * language-neutral.
-       *
-       * The actual language is locked PER MESSAGE
-       * inside ask().
-       */
-      _chat = await _model!.createChat(
-        temperature: 0.4,
-        randomSeed: 42,
-        topK: 40,
-        maxOutputTokens: 512,
-        systemInstruction: '''
-You are FarmHelper, an offline agricultural AI assistant.
+      await for (final response in _chat!.generateChatResponseAsync()) {
+        if (response is TextResponse && response.token.isNotEmpty) {
+          buffer.write(response.token);
+          yield _cleanAnswer(buffer.toString());
+        }
+      }
 
-Your purpose is to help farmers understand:
-
-- crop diseases
-- plant health
-- disease prevention
-- irrigation
-- crop care
-- basic agricultural practices
-- general farming questions
-
-Always follow the language lock supplied with each farmer message.
-
-Use simple, practical language.
-
-If disease detection context is provided, use it.
-
-Disease detection is not absolute certainty.
-
-Never claim internet access.
-
-Never claim that you consulted an online source.
-
-Never invent pesticide or chemical dosages.
-
-If asked for pesticide dosage, advise the farmer to
-follow the product label and local agricultural guidance.
-
-Do not pretend to be a certified agricultural officer.
-
-Give actionable advice whenever appropriate.
-
-You are running completely offline on the farmer's device.
-''',
-      );
-
-      _initialized = true;
-
-      debugPrint(
-        '======================================',
-      );
-      debugPrint(
-        '          GEMMA READY                 ',
-      );
-      debugPrint(
-        '======================================',
-      );
-    } catch (e, stackTrace) {
-      _initialized = false;
-      _model = null;
-      _chat = null;
-
-      debugPrint(
-        'GEMMA INITIALIZATION ERROR: $e',
-      );
-
-      debugPrint(
-        stackTrace.toString(),
-      );
-
+      if (_cleanAnswer(buffer.toString()).isEmpty) {
+        yield LanguageService.emptyAnswerMessage(lang);
+      }
+    } catch (e, st) {
+      debugPrint('GemmaService: generation error: $e\n$st');
+      // Make sure the next question gets a healthy session.
+      await _recoverSession();
       rethrow;
     } finally {
-      _initializing = false;
+      _busy = false;
     }
   }
 
-  /// Sends a farmer question to Gemma.
-  ///
-  /// If language is supplied, it is used directly.
-  /// Otherwise the language is detected from the question.
+  /// Non-streaming convenience wrapper.
   static Future<String> ask(
     String question, {
     String? language,
+    List<ChatTurn> history = const [],
   }) async {
-    if (!_initialized || _chat == null) {
-      throw Exception(
-        'FarmHelper AI has not been initialized yet.',
-      );
+    var answer = '';
+    await for (final partial
+        in askStream(question, language: language, history: history)) {
+      answer = partial;
     }
-
-    final cleanQuestion =
-        question.trim();
-
-    if (cleanQuestion.isEmpty) {
-      return '';
-    }
-
-    /*
-     * Detect the language of THIS message.
-     *
-     * This is extremely important because the
-     * conversation can contain multiple languages.
-     */
-    final detectedLanguage =
-        language ??
-            LanguageService.detectLanguage(
-              cleanQuestion,
-            );
-
-    final languageInstruction =
-        LanguageService.getGemmaInstruction(
-      detectedLanguage,
-    );
-
-    /*
-     * Get current disease detection information.
-     */
-    final diseaseContext =
-        AIContextService.buildContext();
-
-    /*
-     * Construct the complete prompt.
-     */
-    final prompt = '''
-$languageInstruction
-
-IMPORTANT:
-Answer the farmer's current question directly.
-
-Do not discuss the language instruction.
-
-CURRENT FARMER LANGUAGE:
-${LanguageService.getLanguageName(detectedLanguage)}
-
-${diseaseContext.isNotEmpty ? diseaseContext : ''}
-
-FARMER'S CURRENT QUESTION:
-$cleanQuestion
-''';
-
-    debugPrint(
-      '======================================',
-    );
-
-    debugPrint(
-      'Gemma language: $detectedLanguage',
-    );
-
-    debugPrint(
-      'Gemma question: $cleanQuestion',
-    );
-
-    /*
-     * Send the language-locked message.
-     */
-    await _chat!.addQueryChunk(
-      Message.text(
-        text: prompt,
-        isUser: true,
-      ),
-    );
-
-    /*
-     * Generate response.
-     */
-    final response =
-        await _chat!.generateChatResponse();
-
-    /*
-     * TextResponse.token contains the actual
-     * generated text.
-     */
-    if (response is TextResponse) {
-      final text =
-          response.token.trim();
-
-      debugPrint(
-        'Gemma response [$detectedLanguage]: $text',
-      );
-
-      return text;
-    }
-
-    debugPrint(
-      'Unexpected Gemma response type: '
-      '${response.runtimeType}',
-    );
-
-    return response.toString();
+    return answer;
   }
 
-  /// Resets the conversation without uninstalling
-  /// the Gemma model.
-  static Future<void> resetConversation() async {
-    if (_model == null) {
-      return;
-    }
-
+  /// Stops the answer currently being generated.
+  static Future<void> stopGeneration() async {
+    if (!_busy) return;
     try {
-      await _chat?.session.close();
+      await _chat?.stopGeneration();
     } catch (e) {
-      debugPrint(
-        'Gemma chat close warning: $e',
-      );
+      debugPrint('GemmaService: stop warning: $e');
     }
-
-    _chat = await _model!.createChat(
-      temperature: 0.4,
-      randomSeed: 42,
-      topK: 40,
-      maxOutputTokens: 512,
-      systemInstruction: '''
-You are FarmHelper, an offline agricultural AI assistant.
-
-Help farmers with:
-
-- crop diseases
-- plant health
-- disease prevention
-- irrigation
-- crop care
-- general agricultural questions
-
-Always follow the language lock provided with each
-farmer message.
-
-Use simple, practical language.
-
-Use disease detection context when provided.
-
-Never claim internet access.
-
-Never claim that you consulted online sources.
-
-Never invent pesticide or chemical dosages.
-
-Give practical agricultural advice.
-
-You are running completely offline.
-''',
-    );
-
-    debugPrint(
-      'Gemma conversation reset.',
-    );
   }
 
-  /// Releases the in-memory Gemma runtime.
-  ///
-  /// IMPORTANT:
-  /// This does NOT uninstall the model from the phone.
+  static Future<void> resetConversation() async {
+    await _recoverSession();
+  }
+
+  /// Releases the in-memory model. The installed model file
+  /// stays on the phone.
   static Future<void> dispose() async {
     try {
-      await _chat?.session.close();
+      await _chat?.close();
     } catch (_) {}
-
-    _chat = null;
-
     try {
       await _model?.close();
     } catch (_) {}
-
+    _chat = null;
     _model = null;
-    _initialized = false;
+    _initFuture = null;
+  }
 
-    debugPrint(
-      'Gemma runtime resources released.',
-    );
+  static Future<void> _recoverSession() async {
+    final model = _model;
+    if (model == null) return;
+    try {
+      await _chat?.close();
+    } catch (_) {}
+    try {
+      _chat = await _createChat(model);
+    } catch (e) {
+      debugPrint('GemmaService: could not recreate chat: $e');
+      _chat = null;
+      _initFuture = null;
+    }
+  }
 
-    debugPrint(
-      'Installed Gemma model remains on device.',
-    );
+  static String _buildPrompt(
+    String question,
+    String lang,
+    List<ChatTurn> history,
+  ) {
+    final prompt = StringBuffer();
+
+    final context = AIContextService.buildContext();
+    if (context.isNotEmpty) {
+      prompt
+        ..writeln(context)
+        ..writeln();
+    }
+
+    final recent = history.length > _historyTurns
+        ? history.sublist(history.length - _historyTurns)
+        : history;
+    if (recent.isNotEmpty) {
+      prompt.writeln('Earlier in this chat:');
+      for (final turn in recent) {
+        prompt
+          ..writeln('Farmer: ${_truncate(turn.question)}')
+          ..writeln('FarmHelper: ${_truncate(turn.answer)}');
+      }
+      prompt.writeln();
+    }
+
+    prompt
+      ..writeln('Farmer\'s question: $question')
+      ..writeln()
+      ..write(LanguageService.getGemmaInstruction(lang));
+
+    return prompt.toString();
+  }
+
+  static String _truncate(String text) {
+    final value = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return value.length <= _historyChars
+        ? value
+        : '${value.substring(0, _historyChars)}...';
+  }
+
+  /// Strips Gemma control tokens that sometimes leak into text.
+  static String _cleanAnswer(String text) {
+    return text
+        .replaceAll(RegExp(r'<(start|end)_of_turn>(model|user)?'), '')
+        .replaceAll('<eos>', '')
+        .trim();
   }
 }

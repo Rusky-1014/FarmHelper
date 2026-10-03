@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../services/labels.dart';
 import '../services/medicine_service.dart';
 import '../services/ai_context_service.dart';
+import 'ai_assistant_screen.dart';
 
 class ResultScreen extends StatelessWidget {
   final File image;
@@ -712,6 +713,53 @@ class ResultScreen extends StatelessWidget {
                     ),
 
                     const SizedBox(height: 20),
+
+                    // ── Ask AI about this result ─────────────────────────────
+                    GestureDetector(
+                      onTap: () {
+                        AIContextService.setDiseaseContext(
+                          cropName: crop,
+                          diseaseName: disease,
+                          diseaseConfidence: confidence,
+                        );
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const AiAssistantScreen(),
+                          ),
+                        );
+                      },
+                      child: Container(
+                        width: double.infinity,
+                        height: 56,
+                        decoration: BoxDecoration(
+                          color: _accentColor.withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(
+                            color: _accentColor.withOpacity(0.5),
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.smart_toy_outlined,
+                                color: _accentColor, size: 20),
+                            const SizedBox(width: 10),
+                            Text(
+                              'ASK FARMHELPER AI',
+                              style: TextStyle(
+                                color: _accentColor,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: 1.5,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                    const SizedBox(height: 12),
 
                     // ── Scan again button ────────────────────────────────────
                     GestureDetector(

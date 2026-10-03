@@ -1,30 +1,66 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:plant_disease_app/main.dart';
+import 'package:plant_disease_app/services/ai_context_service.dart';
+import 'package:plant_disease_app/services/labels.dart';
+import 'package:plant_disease_app/services/language_service.dart';
+import 'package:plant_disease_app/services/medicine_service.dart';
+import 'package:plant_disease_app/services/prediction_service.dart';
+import 'package:plant_disease_app/services/text_to_speech_service.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  group('LanguageService', () {
+    test('detects language from script', () {
+      expect(LanguageService.detectLanguage('How to treat mildew?'), 'en');
+      expect(LanguageService.detectLanguage('आम के पत्ते'), 'hi');
+      expect(LanguageService.detectLanguage('மாம்பழ இலை'), 'ta');
+      expect(LanguageService.detectLanguage('  '), 'en');
+    });
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+    test('Tamil has no offline voice', () {
+      expect(LanguageService.supportsOfflineTts('en'), isTrue);
+      expect(LanguageService.supportsOfflineTts('hi'), isTrue);
+      expect(LanguageService.supportsOfflineTts('ta'), isFalse);
+    });
+  });
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
+  group('PredictionService', () {
+    test('argmax and confidence', () {
+      final values = [0.1, 0.7, 0.2];
+      expect(PredictionService.argmax(values), 1);
+      expect(PredictionService.confidence(values), 0.7);
+    });
+  });
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+  test('every label has a treatment entry', () {
+    for (final entry in cropLabels.entries) {
+      for (final disease in entry.value) {
+        final medicine = MedicineService.getMedicine(entry.key, disease);
+        expect(medicine.name, isNot('Consult local agronomist'),
+            reason: '${entry.key}/$disease');
+      }
+    }
+  });
+
+  test('AI context includes the scan and treatment', () {
+    AIContextService.setDiseaseContext(
+      cropName: 'mango',
+      diseaseName: 'Anthracnose',
+      diseaseConfidence: 0.91,
+    );
+    final context = AIContextService.buildContext();
+    expect(context, contains('Anthracnose'));
+    expect(context, contains('91%'));
+    expect(context, contains('Copper Oxychloride'));
+    AIContextService.clear();
+    expect(AIContextService.buildContext(), isEmpty);
+  });
+
+  test('speech text has markdown removed and is capped', () {
+    expect(
+      TextToSpeechService.cleanForSpeech('**Spray** neem oil.\n- Remove leaves'),
+      'Spray neem oil. Remove leaves',
+    );
+    final long = List.filled(200, 'Water the plant.').join(' ');
+    expect(TextToSpeechService.cleanForSpeech(long).length, lessThanOrEqualTo(600));
   });
 }

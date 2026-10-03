@@ -68,70 +68,34 @@ class LanguageService {
     }
   }
 
-  /// Gives Gemma a strong per-message language instruction.
+  /// Per-message language instruction, placed at the end of
+  /// the prompt where the small model follows it best.
   static String getGemmaInstruction(String language) {
     switch (language) {
       case 'hi':
-        return '''
-LANGUAGE LOCK: HINDI
-
-The farmer is communicating in Hindi.
-
-You MUST answer ONLY in Hindi.
-
-Use Devanagari script.
-
-Do NOT translate the answer into English.
-
-Do NOT translate the answer into Tamil.
-
-Do NOT switch languages because previous messages used another language.
-
-Do not mention this language instruction.
-
-Keep the answer simple and useful for a farmer.
-''';
+        return 'Answer only in Hindi, using Devanagari script. '
+            'Do not use English sentences.';
 
       case 'ta':
-        return '''
-LANGUAGE LOCK: TAMIL
-
-The farmer is communicating in Tamil.
-
-You MUST answer ONLY in Tamil.
-
-Use Tamil script.
-
-Do NOT translate the answer into English.
-
-Do NOT translate the answer into Hindi.
-
-Do NOT switch languages because previous messages used another language.
-
-Do not mention this language instruction.
-
-Keep the answer simple and useful for a farmer.
-''';
+        return 'Answer only in Tamil, using Tamil script. '
+            'Do not use English sentences.';
 
       case 'en':
       default:
-        return '''
-LANGUAGE LOCK: ENGLISH
+        return 'Answer only in English.';
+    }
+  }
 
-The farmer is communicating in English.
-
-You MUST answer ONLY in English.
-
-Do NOT translate the answer into Hindi.
-
-Do NOT translate the answer into Tamil.
-
-Do NOT switch languages because previous messages used another language.
-
-Do not mention this language instruction.
-
-Keep the answer simple and useful for a farmer.
-''';
+  /// Shown when the model produced no text at all.
+  static String emptyAnswerMessage(String language) {
+    switch (language) {
+      case 'hi':
+        return 'माफ़ कीजिए, मैं इसका उत्तर नहीं दे पाया। कृपया अपना प्रश्न दोबारा, थोड़े अलग शब्दों में पूछें।';
+      case 'ta':
+        return 'மன்னிக்கவும், என்னால் பதில் தர முடியவில்லை. உங்கள் கேள்வியை வேறு வார்த்தைகளில் மீண்டும் கேளுங்கள்.';
+      case 'en':
+      default:
+        return 'Sorry, I could not answer that. Please ask again in different words.';
     }
   }
 

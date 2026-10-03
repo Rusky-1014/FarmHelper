@@ -1,296 +1,131 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:audioplayers/audioplayers.dart';
-import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:sherpa_onnx/sherpa_onnx.dart'
-    as sherpa_onnx;
+import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
 
+import 'asset_file_service.dart';
 import 'language_service.dart';
 
+/// Offline text-to-speech using Supertonic 3 (sherpa-onnx).
+///
+/// Speech synthesis is CPU heavy and takes seconds, so it
+/// runs in a background isolate. Running it on the UI
+/// isolate froze the whole app after every AI answer.
 class TextToSpeechService {
   TextToSpeechService._();
 
-  static sherpa_onnx.OfflineTts? _tts;
+  static const _base = 'assets/tts/supertonic';
 
-  static final AudioPlayer _player =
-      AudioPlayer();
+  static final AudioPlayer _player = AudioPlayer();
 
-  static bool _initialized = false;
+  static _TtsPaths? _paths;
+  static StreamSubscription<void>? _completion;
+
   static bool _speaking = false;
 
-  static bool get isInitialized =>
-      _initialized;
+  /// Incremented on every speak()/stop() so a slow synthesis
+  /// that finishes after the user pressed stop is discarded.
+  static int _generation = 0;
 
-  static bool get isSpeaking =>
-      _speaking;
+  static bool get isInitialized => _paths != null;
 
-  static Future<String> _copyAssetToLocal(
-    String assetPath,
-  ) async {
-    final appDirectory =
-        await getApplicationSupportDirectory();
+  static bool get isSpeaking => _speaking;
 
-    final destination = File(
-      '${appDirectory.path}/$assetPath',
-    );
-
-    await destination.parent.create(
-      recursive: true,
-    );
-
-    if (!await destination.exists()) {
-      final data =
-          await rootBundle.load(assetPath);
-
-      final bytes =
-          data.buffer.asUint8List(
-        data.offsetInBytes,
-        data.lengthInBytes,
-      );
-
-      await destination.writeAsBytes(
-        bytes,
-        flush: true,
-      );
-    }
-
-    return destination.path;
-  }
-
+  /// Copies the model files out of the APK (first run only).
   static Future<void> initialize() async {
-    if (_initialized && _tts != null) {
+    if (_paths != null) {
       return;
     }
 
-    try {
-      await sherpa_onnx.initBindingsAsync();
+    _paths = _TtsPaths(
+      durationPredictor: await AssetFileService.copyAssetToLocal(
+          '$_base/duration_predictor.int8.onnx'),
+      textEncoder: await AssetFileService.copyAssetToLocal(
+          '$_base/text_encoder.int8.onnx'),
+      vectorEstimator: await AssetFileService.copyAssetToLocal(
+          '$_base/vector_estimator.int8.onnx'),
+      vocoder:
+          await AssetFileService.copyAssetToLocal('$_base/vocoder.int8.onnx'),
+      ttsJson: await AssetFileService.copyAssetToLocal('$_base/tts.json'),
+      unicodeIndexer:
+          await AssetFileService.copyAssetToLocal('$_base/unicode_indexer.bin'),
+      voiceStyle: await AssetFileService.copyAssetToLocal('$_base/voice.bin'),
+    );
 
-      const base =
-          'assets/tts/supertonic';
-
-      final durationPredictor =
-          await _copyAssetToLocal(
-        '$base/duration_predictor.int8.onnx',
-      );
-
-      final textEncoder =
-          await _copyAssetToLocal(
-        '$base/text_encoder.int8.onnx',
-      );
-
-      final vectorEstimator =
-          await _copyAssetToLocal(
-        '$base/vector_estimator.int8.onnx',
-      );
-
-      final vocoder =
-          await _copyAssetToLocal(
-        '$base/vocoder.int8.onnx',
-      );
-
-      final ttsJson =
-          await _copyAssetToLocal(
-        '$base/tts.json',
-      );
-
-      final unicodeIndexer =
-          await _copyAssetToLocal(
-        '$base/unicode_indexer.bin',
-      );
-
-      final voiceStyle =
-          await _copyAssetToLocal(
-        '$base/voice.bin',
-      );
-
-      final supertonic =
-          sherpa_onnx
-              .OfflineTtsSupertonicModelConfig(
-        durationPredictor:
-            durationPredictor,
-        textEncoder:
-            textEncoder,
-        vectorEstimator:
-            vectorEstimator,
-        vocoder:
-            vocoder,
-        ttsJson:
-            ttsJson,
-        unicodeIndexer:
-            unicodeIndexer,
-        voiceStyle:
-            voiceStyle,
-      );
-
-      final model =
-          sherpa_onnx.OfflineTtsModelConfig(
-        supertonic: supertonic,
-        numThreads: 2,
-        debug: false,
-        provider: 'cpu',
-      );
-
-      final config =
-          sherpa_onnx.OfflineTtsConfig(
-        model: model,
-        maxNumSenetences: 1,
-      );
-
-      _tts =
-          sherpa_onnx.OfflineTts(
-        config,
-      );
-
-      _initialized = true;
-
-      print(
-        'TextToSpeechService: Supertonic ready.',
-      );
-    } catch (e) {
-      _initialized = false;
-      _tts = null;
-
-      print(
-        'TextToSpeechService initialization error: $e',
-      );
-
-      rethrow;
-    }
+    debugPrint('TextToSpeechService: Supertonic files ready.');
   }
 
-  /// Returns true if the currently installed
-  /// Supertonic model can speak the requested language.
-  static bool supportsLanguage(
-    String language,
-  ) {
-    return LanguageService
-        .supportsOfflineTts(language);
+  /// Whether the Supertonic model can speak [language].
+  static bool supportsLanguage(String language) {
+    return LanguageService.supportsOfflineTts(language);
   }
 
   /// Generates and plays offline speech.
   ///
-  /// English -> Supertonic
-  /// Hindi   -> Supertonic
-  /// Tamil   -> NOT synthesized by current model
+  /// Returns true once playback has started, false if the
+  /// language is unsupported or the request was superseded.
   static Future<bool> speak(
     String text, {
     String language = 'en',
-    int speakerId = 0,
     double speed = 1.0,
-    int numSteps = 8,
   }) async {
-    final cleanText =
-        text.trim();
+    final cleanText = cleanForSpeech(text);
 
-    if (cleanText.isEmpty) {
+    if (cleanText.isEmpty || !supportsLanguage(language)) {
       return false;
     }
 
-    /*
-     * Prevent unsupported Tamil from being sent
-     * into Supertonic.
-     */
-    if (!supportsLanguage(language)) {
-      print(
-        'TTS: Language "$language" is not supported '
-        'by the current Supertonic model.',
-      );
-
-      return false;
-    }
+    await stop();
+    final myGeneration = ++_generation;
 
     await initialize();
 
-    await stop();
-
-    final directory =
-        await getTemporaryDirectory();
-
-    final outputPath =
-        '${directory.path}/farmhelper_tts.wav';
-
-    final oldFile =
-        File(outputPath);
-
-    if (await oldFile.exists()) {
-      await oldFile.delete();
-    }
-
-    print(
-      'TextToSpeechService: Generating $language speech...',
-    );
-
-    final generationConfig =
-        sherpa_onnx
-            .OfflineTtsGenerationConfig(
-      sid: speakerId,
-      speed: speed,
-      numSteps: numSteps,
-      extra: {
-        'lang': language,
-      },
-    );
-
-    final audio =
-        _tts!.generateWithConfig(
-      text: cleanText,
-      config: generationConfig,
-    );
-
-    if (audio.samples.isEmpty) {
-      throw Exception(
-        'TTS generated empty audio.',
-      );
-    }
-
-    final written =
-        sherpa_onnx.writeWave(
-      filename: outputPath,
-      samples: audio.samples,
-      sampleRate: audio.sampleRate,
-    );
-
-    if (!written) {
-      throw Exception(
-        'Failed to write generated TTS audio.',
-      );
-    }
+    final directory = await getTemporaryDirectory();
+    final outputPath = '${directory.path}/farmhelper_tts_$myGeneration.wav';
 
     _speaking = true;
 
-    print(
-      'TextToSpeechService: Playing $language speech.',
+    final paths = _paths!;
+
+    final written = await Isolate.run(
+      () => _synthesize(paths, cleanText, language, speed, outputPath),
     );
 
-    late final StreamSubscription<void>
-        completionSubscription;
+    if (myGeneration != _generation) {
+      // stop() or a newer speak() happened meanwhile.
+      _deleteQuietly(outputPath);
+      return false;
+    }
 
-    completionSubscription =
-        _player.onPlayerComplete.listen((_) {
+    if (!written) {
       _speaking = false;
-      completionSubscription.cancel();
+      throw Exception('TTS could not generate audio.');
+    }
+
+    await _completion?.cancel();
+    _completion = _player.onPlayerComplete.listen((_) {
+      _speaking = false;
+      _deleteQuietly(outputPath);
     });
 
     try {
-      await _player.play(
-        DeviceFileSource(outputPath),
-      );
-
+      await _player.play(DeviceFileSource(outputPath));
       return true;
-    } catch (e) {
+    } catch (_) {
       _speaking = false;
-
-      await completionSubscription.cancel();
-
       rethrow;
     }
   }
 
   static Future<void> stop() async {
+    _generation++;
     try {
       await _player.stop();
+    } catch (_) {
     } finally {
       _speaking = false;
     }
@@ -298,14 +133,107 @@ class TextToSpeechService {
 
   static Future<void> dispose() async {
     await stop();
-
-    try {
-      _tts?.free();
-    } catch (_) {}
-
-    _tts = null;
-    _initialized = false;
-
+    await _completion?.cancel();
     await _player.dispose();
+  }
+
+  /// Removes markdown and symbols that the model would
+  /// otherwise read out loud, and caps very long answers.
+  static String cleanForSpeech(String text) {
+    var value = text
+        .replaceAll(RegExp(r'[*#_`>|~]'), ' ')
+        .replaceAll(RegExp(r'^\s*[-•]\s*', multiLine: true), '')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+
+    const maxChars = 600;
+    if (value.length > maxChars) {
+      final cut = value.lastIndexOf(RegExp(r'[.!?।]'), maxChars);
+      value = value.substring(0, cut > 100 ? cut + 1 : maxChars);
+    }
+
+    return value;
+  }
+
+  static void _deleteQuietly(String path) {
+    try {
+      final file = File(path);
+      if (file.existsSync()) file.deleteSync();
+    } catch (_) {}
+  }
+}
+
+class _TtsPaths {
+  final String durationPredictor;
+  final String textEncoder;
+  final String vectorEstimator;
+  final String vocoder;
+  final String ttsJson;
+  final String unicodeIndexer;
+  final String voiceStyle;
+
+  const _TtsPaths({
+    required this.durationPredictor,
+    required this.textEncoder,
+    required this.vectorEstimator,
+    required this.vocoder,
+    required this.ttsJson,
+    required this.unicodeIndexer,
+    required this.voiceStyle,
+  });
+}
+
+/// Runs inside a background isolate.
+bool _synthesize(
+  _TtsPaths paths,
+  String text,
+  String language,
+  double speed,
+  String outputPath,
+) {
+  sherpa_onnx.initBindings();
+
+  final config = sherpa_onnx.OfflineTtsConfig(
+    model: sherpa_onnx.OfflineTtsModelConfig(
+      supertonic: sherpa_onnx.OfflineTtsSupertonicModelConfig(
+        durationPredictor: paths.durationPredictor,
+        textEncoder: paths.textEncoder,
+        vectorEstimator: paths.vectorEstimator,
+        vocoder: paths.vocoder,
+        ttsJson: paths.ttsJson,
+        unicodeIndexer: paths.unicodeIndexer,
+        voiceStyle: paths.voiceStyle,
+      ),
+      numThreads: 2,
+      debug: false,
+      provider: 'cpu',
+    ),
+    maxNumSenetences: 1,
+  );
+
+  final tts = sherpa_onnx.OfflineTts(config);
+
+  try {
+    final audio = tts.generateWithConfig(
+      text: text,
+      config: sherpa_onnx.OfflineTtsGenerationConfig(
+        sid: 0,
+        speed: speed,
+        numSteps: 8,
+        extra: {'lang': language},
+      ),
+    );
+
+    if (audio.samples.isEmpty) {
+      return false;
+    }
+
+    return sherpa_onnx.writeWave(
+      filename: outputPath,
+      samples: audio.samples,
+      sampleRate: audio.sampleRate,
+    );
+  } finally {
+    tts.free();
   }
 }

@@ -14,7 +14,6 @@ import '../services/labels.dart';
 import '../services/history_service.dart';
 import '../models/scan_record.dart';
 import '../widgets/floating_leaves.dart';
-import '../widgets/glass_card.dart';
 import '../widgets/scan_overlay.dart';
 import '../widgets/shimmer_loader.dart';
 import '../widgets/morphing_button.dart';

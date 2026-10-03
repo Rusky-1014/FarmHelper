@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../services/localization_service.dart';
+
 class AppProvider extends ChangeNotifier {
   bool _isDarkMode = true;
   String _language = 'en';
@@ -18,6 +20,7 @@ class AppProvider extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     _isDarkMode = prefs.getBool('dark_mode') ?? true;
     _language = prefs.getString('app_language') ?? 'en';
+    L.setLanguage(_language);
     _farmerName = prefs.getString('farmer_name') ?? '';
     notifyListeners();
   }
@@ -31,6 +34,7 @@ class AppProvider extends ChangeNotifier {
 
   Future<void> setLanguage(String lang) async {
     _language = lang;
+    L.setLanguage(lang);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('app_language', lang);
     notifyListeners();
